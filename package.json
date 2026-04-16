@@ -1,6 +1,6 @@
 {
   "name": "@hoangvu12/claude-switch",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Switch between Claude Code accounts with ease",
   "type": "module",
   "bin": {

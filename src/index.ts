@@ -2,7 +2,7 @@
 
 import chalk from "chalk";
 import { select } from "@inquirer/prompts";
-import { listProfiles, readState } from "./lib/profiles";
+import { listProfiles, readActive } from "./lib/profiles";
 import { formatLabel, formatType, blank, hint } from "./lib/ui";
 import { add } from "./commands/add";
 import { use } from "./commands/use";
@@ -41,7 +41,7 @@ async function interactivePicker(): Promise<void> {
   }
 
   blank();
-  const state = await readState();
+  const active = await readActive();
 
   const choice = await select({
     message: "Switch to profile",
@@ -56,7 +56,7 @@ async function interactivePicker(): Promise<void> {
         .join("  "),
       value: p.name,
     })),
-    default: state.active ?? undefined,
+    default: active ?? undefined,
   });
 
   await use(choice);

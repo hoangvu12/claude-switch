@@ -1,8 +1,9 @@
 import chalk from "chalk";
-import { switchProfile, profileExists, readState } from "../lib/profiles";
-import { readCredentials } from "../lib/credentials";
+import { activate, profileExists, readActive, getProfileData } from "../lib/profiles";
 import { profileCredentials } from "../lib/paths";
+import { readJson } from "../lib/fs";
 import { success, error, blank, formatLabel, formatType, maskKey } from "../lib/ui";
+import type { CredentialsFile } from "../types";
 
 export async function use(name: string): Promise<void> {
   blank();
@@ -14,20 +15,27 @@ export async function use(name: string): Promise<void> {
     process.exit(1);
   }
 
-  const state = await readState();
-  if (state.active === name) {
+  const current = await readActive();
+  if (current === name) {
     success(`Already on ${chalk.bold(name)}`);
     blank();
     return;
   }
 
-  const data = await switchProfile(name);
-  let label: string;
+  try {
+    await activate(name);
+  } catch (err) {
+    error(err instanceof Error ? err.message : String(err));
+    blank();
+    process.exit(1);
+  }
 
+  const data = await getProfileData(name);
+  let label: string;
   if (data.type === "api-key" && data.apiKey) {
     label = chalk.dim(maskKey(data.apiKey));
   } else {
-    const creds = await readCredentials(profileCredentials(name));
+    const creds = await readJson<CredentialsFile | null>(profileCredentials(name), null);
     label = formatLabel(creds?.claudeAiOauth?.subscriptionType ?? null, "oauth");
   }
 

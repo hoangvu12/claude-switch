@@ -20,32 +20,28 @@ npx @hoangvu12/claude-switch use work
 ## Getting Started
 
 ```bash
-# Save your current logged-in account
+# First add — offers to import your existing ~/.claude as a profile
 claude-switch add personal
 
-# Log into another account, save that too
-claude auth logout
-claude auth login
+# Add another account (runs `claude /login` in an isolated profile dir)
 claude-switch add work
 
-# Now switch whenever you want
+# Switch instantly — takes effect in every terminal
 claude-switch use personal
 claude-switch use work
 
-# Or just run it with no args for a picker
+# No args = interactive picker
 claude-switch
 ```
 
-## Adding API Key Profiles
+No shell setup, no sourcing, no env vars. Just run the command.
 
-Not on a subscription? You can save API key profiles too:
+## Adding API Key Profiles
 
 ```bash
 claude-switch add my-api
 # Pick "API Key" when prompted, paste your key
 ```
-
-When you switch to an API key profile, the key gets written to your Claude settings. When you switch away, it's cleaned up automatically.
 
 ## Commands
 
@@ -59,32 +55,29 @@ When you switch to an API key profile, the key gets written to your Claude setti
 | `claude-switch current` | Print the active profile |
 | `claude-switch remove <name>` | Delete a profile |
 
-## What the list looks like
-
-```
-  Profiles
-
-  ▸ personal  oauth  Max
-    work      oauth  Pro
-    testing   api-key  sk-ant-••••Bx4Q
-```
-
 ## How It Works
 
-Profiles live in `~/.claude-profiles/`. Each one stores either OAuth credentials or an API key.
+Each profile is a fully isolated Claude config directory at `~/.claude-switch/profiles/<name>/`. Switching profiles swings `~/.claude` as a **symlink** (directory junction on Windows, no admin needed) to point at the active profile. Claude Code, your IDE, and any wrappers like discord-rc just read `~/.claude` as usual — they don't even know it's a link.
 
-**OAuth profiles** (subscriptions) swap `~/.claude/.credentials.json` and the `oauthAccount` field in `~/.claude.json` — the files Claude Code reads for auth and account identity. On macOS, credentials are read/written via the Keychain instead.
+Because we never copy credentials in or out, OAuth refresh tokens can't go stale. Claude Code refreshes tokens in place inside whatever profile dir is active; they stay valid across switches forever.
 
-**API key profiles** write `ANTHROPIC_API_KEY` into the `env` block of `~/.claude/settings.json`. This works everywhere — terminal, VS Code, Cursor, any IDE that runs Claude Code.
+The small sync that still happens: `oauthAccount` (account identity, not tokens) lives in `~/.claude.json` which is a sibling of `~/.claude/`. The tool keeps a per-profile snapshot of this field and restores it on switch so the UI shows the right account.
 
-When you switch profiles, your current session is automatically backed up to its profile before the swap. Nothing gets lost.
+**API key profiles** store the key in `settings.json` inside the profile dir, so it's automatically active when the junction points at that profile.
 
 ## Works With
 
-- Any OS — macOS (Keychain), Windows, Linux
-- Any IDE — VS Code, Cursor, Windsurf, or plain terminal
-- Subscriptions — Pro, Max, Team, Enterprise
-- API keys — any Anthropic API key
+- Windows (via directory junctions, no admin required)
+- Linux (via symlinks)
+- Any IDE that reads `~/.claude` — VS Code, Cursor, Windsurf, plain terminal
+- Wrappers like discord-rc — they inherit `~/.claude` through the junction
+- Subscriptions (Pro, Max, Team, Enterprise) and API keys
+
+macOS is not supported in v3 — Claude Code stores OAuth tokens in Keychain on Mac (not in `~/.claude`), which the junction approach can't isolate.
+
+## Upgrading from v2
+
+v3 is a rewrite. Old profiles in `~/.claude-profiles/` are ignored — you'll re-add your accounts. This is deliberate: v2's copy-based approach could leave saved refresh tokens stale (and invalid). The new junction-based approach avoids that class of bug entirely. Safe to delete `~/.claude-profiles/` after setup.
 
 ## License
 

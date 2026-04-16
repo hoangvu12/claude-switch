@@ -1,20 +1,16 @@
 import { CLAUDE_JSON } from "./paths";
 import { fileExists, readJson, writeJson } from "./fs";
-import type { OAuthAccount } from "../types";
 
-interface ClaudeJson {
-  oauthAccount?: OAuthAccount;
-  [key: string]: unknown;
-}
+type ClaudeJson = Record<string, unknown> & { oauthAccount?: Record<string, unknown> };
 
-export async function readOAuthAccount(): Promise<OAuthAccount | null> {
+export async function readOAuthAccount(): Promise<Record<string, unknown> | null> {
   if (!(await fileExists(CLAUDE_JSON))) return null;
   const data = await readJson<ClaudeJson>(CLAUDE_JSON, {});
   return data.oauthAccount ?? null;
 }
 
 export async function writeOAuthAccount(
-  account: OAuthAccount | null,
+  account: Record<string, unknown> | null,
 ): Promise<void> {
   const data = await readJson<ClaudeJson>(CLAUDE_JSON, {});
   if (account) {

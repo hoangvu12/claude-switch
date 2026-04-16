@@ -4,26 +4,10 @@ export interface OAuthCredentials {
   expiresAt: number;
   scopes: string[];
   subscriptionType?: string;
-  rateLimitTier?: string;
 }
 
 export interface CredentialsFile {
   claudeAiOauth: OAuthCredentials;
-}
-
-export interface OAuthAccount {
-  accountUuid?: string;
-  emailAddress?: string;
-  organizationUuid?: string;
-  displayName?: string;
-  organizationRole?: string;
-  organizationName?: string;
-  workspaceRole?: string | null;
-  billingType?: string;
-  hasExtraUsageEnabled?: boolean;
-  accountCreatedAt?: string;
-  subscriptionCreatedAt?: string;
-  [key: string]: unknown;
 }
 
 export type ProfileType = "oauth" | "api-key";
@@ -33,13 +17,9 @@ export interface ProfileData {
   apiKey?: string;
 }
 
-export interface ProfileState {
-  active: string | null;
-}
-
 export interface ProfileInfo {
   name: string;
   type: ProfileType;
-  label: string | null; // subscription type for oauth, masked key for api-key
+  label: string | null;
   isActive: boolean;
 }

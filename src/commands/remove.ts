@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { confirm } from "@inquirer/prompts";
-import { removeProfile, profileExists, readState } from "../lib/profiles";
+import { removeProfile, profileExists, readActive } from "../lib/profiles";
 import { success, error, blank } from "../lib/ui";
 
 export async function remove(name: string): Promise<void> {
@@ -12,8 +12,8 @@ export async function remove(name: string): Promise<void> {
     process.exit(1);
   }
 
-  const state = await readState();
-  const isActive = state.active === name;
+  const active = await readActive();
+  const isActive = active === name;
 
   const ok = await confirm({
     message: `Delete profile "${name}"?${isActive ? chalk.yellow(" (currently active)") : ""}`,
@@ -27,7 +27,6 @@ export async function remove(name: string): Promise<void> {
   }
 
   await removeProfile(name);
-
   blank();
   success(`Profile ${chalk.bold(name)} removed`);
   blank();

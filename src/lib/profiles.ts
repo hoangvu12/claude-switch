@@ -1,63 +1,86 @@
-import { mkdir, readdir, rm } from "fs/promises";
+import { mkdir, readdir, rm, readFile, writeFile } from "fs/promises";
 import {
   PROFILES_DIR,
-  STATE_FILE,
-  CREDENTIALS_FILE,
+  ACTIVE_FILE,
+  ROOT_DIR,
+  CLAUDE_DIR,
   profileDir,
   profileCredentials,
-  profileDataFile,
-  profileAccountFile,
+  profileSettings,
+  profileMeta,
+  profileAccountSnapshot,
 } from "./paths";
-import { readCredentials, copyCredentials } from "./credentials";
-import { readOAuthAccount, writeOAuthAccount } from "./account";
-import { fileExists, readJson, writeJson } from "./fs";
-import { setApiKey, clearApiKey } from "./settings";
+import {
+  fileExists,
+  readJson,
+  writeJson,
+  classifyPath,
+  linkDir,
+  unlinkLink,
+  renameDir,
+} from "./fs";
+import { readOAuthAccount, writeOAuthAccount } from "./claudeJson";
 import { maskKey } from "./ui";
-import type { ProfileState, ProfileInfo, ProfileData, OAuthAccount } from "../types";
+import type { ProfileData, ProfileInfo, CredentialsFile } from "../types";
 
 async function ensureDir(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
 }
 
-// -- State --
+// -- active profile state --
 
-export async function readState(): Promise<ProfileState> {
-  return readJson<ProfileState>(STATE_FILE, { active: null });
+export async function readActive(): Promise<string | null> {
+  try {
+    const content = (await readFile(ACTIVE_FILE, "utf-8")).trim();
+    return content || null;
+  } catch {
+    return null;
+  }
 }
 
-async function writeState(state: ProfileState): Promise<void> {
-  await ensureDir(PROFILES_DIR);
-  await writeJson(STATE_FILE, state);
+async function writeActive(name: string | null): Promise<void> {
+  await ensureDir(ROOT_DIR);
+  if (name) {
+    await writeFile(ACTIVE_FILE, name);
+  } else {
+    try {
+      await rm(ACTIVE_FILE);
+    } catch {}
+  }
 }
 
-// -- Profile data --
+// -- profile metadata (type, api key) --
 
-async function readProfileData(name: string): Promise<ProfileData> {
-  return readJson<ProfileData>(profileDataFile(name), { type: "oauth" });
+async function readProfileMeta(name: string): Promise<ProfileData> {
+  return readJson<ProfileData>(profileMeta(name), { type: "oauth" });
 }
 
-async function writeProfileData(name: string, data: ProfileData): Promise<void> {
-  await writeJson(profileDataFile(name), data);
+async function writeProfileMeta(name: string, data: ProfileData): Promise<void> {
+  await writeJson(profileMeta(name), data);
 }
 
-// -- Public API --
+// -- listing --
 
 export async function listProfiles(): Promise<ProfileInfo[]> {
   await ensureDir(PROFILES_DIR);
-  const state = await readState();
+  const active = await readActive();
   const entries = await readdir(PROFILES_DIR, { withFileTypes: true });
   const profiles: ProfileInfo[] = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (!(await fileExists(profileMeta(entry.name)))) continue;
 
-    const data = await readProfileData(entry.name);
+    const data = await readProfileMeta(entry.name);
     let label: string | null = null;
 
     if (data.type === "api-key" && data.apiKey) {
       label = maskKey(data.apiKey);
     } else {
-      const creds = await readCredentials(profileCredentials(entry.name));
+      const creds = await readJson<CredentialsFile | null>(
+        profileCredentials(entry.name),
+        null,
+      );
       label = creds?.claudeAiOauth?.subscriptionType ?? null;
     }
 
@@ -65,7 +88,7 @@ export async function listProfiles(): Promise<ProfileInfo[]> {
       name: entry.name,
       type: data.type,
       label,
-      isActive: state.active === entry.name,
+      isActive: active === entry.name,
     });
   }
 
@@ -73,102 +96,126 @@ export async function listProfiles(): Promise<ProfileInfo[]> {
 }
 
 export async function profileExists(name: string): Promise<boolean> {
-  return fileExists(profileDataFile(name));
+  return fileExists(profileMeta(name));
 }
 
 export async function getProfileData(name: string): Promise<ProfileData> {
-  return readProfileData(name);
+  return readProfileMeta(name);
 }
 
-export async function addOAuthProfile(
-  name: string,
-  fromCredentials: string = CREDENTIALS_FILE,
-): Promise<void> {
-  await ensureDir(profileDir(name));
-  await copyCredentials(fromCredentials, profileCredentials(name));
-  await writeProfileData(name, { type: "oauth" });
+// -- junction management --
 
-  // Save oauthAccount from ~/.claude.json
-  const account = await readOAuthAccount();
-  if (account) {
-    await writeJson(profileAccountFile(name), account);
+/**
+ * Result of inspecting ~/.claude.
+ * - "missing": doesn't exist
+ * - "junction": already our junction (or any symlink)
+ * - "real": a real directory with Claude's files — needs migration before linking
+ */
+export type ClaudeDirState = "missing" | "junction" | "real";
+
+export async function inspectClaudeDir(): Promise<ClaudeDirState> {
+  const kind = await classifyPath(CLAUDE_DIR);
+  if (kind === "none") return "missing";
+  if (kind === "link") return "junction";
+  return "real";
+}
+
+async function pointClaudeAt(target: string): Promise<void> {
+  const kind = await classifyPath(CLAUDE_DIR);
+  if (kind === "link") {
+    await unlinkLink(CLAUDE_DIR);
+  } else if (kind === "dir") {
+    throw new Error(
+      `~/.claude is a real directory. Import or move it first.`,
+    );
+  } else if (kind === "file") {
+    throw new Error(`~/.claude exists as a file — unexpected. Please inspect manually.`);
   }
-
-  await writeState({ active: name });
+  await linkDir(target, CLAUDE_DIR);
 }
 
-export async function addApiKeyProfile(
+/** Move an existing real ~/.claude into a new profile under the given name. */
+export async function importExistingClaude(name: string): Promise<void> {
+  if ((await inspectClaudeDir()) !== "real") {
+    throw new Error("~/.claude is not a real directory; nothing to import.");
+  }
+  if (await profileExists(name)) {
+    throw new Error(`Profile "${name}" already exists.`);
+  }
+  await ensureDir(PROFILES_DIR);
+  await renameDir(CLAUDE_DIR, profileDir(name));
+  await writeProfileMeta(name, { type: "oauth" });
+
+  // Snapshot the current oauthAccount from ~/.claude.json
+  const account = await readOAuthAccount();
+  if (account) await writeJson(profileAccountSnapshot(name), account);
+}
+
+// -- create / activate / remove --
+
+export async function createOAuthProfile(name: string): Promise<void> {
+  await ensureDir(profileDir(name));
+  await writeProfileMeta(name, { type: "oauth" });
+}
+
+export async function createApiKeyProfile(
   name: string,
   apiKey: string,
 ): Promise<void> {
   await ensureDir(profileDir(name));
-  await writeProfileData(name, { type: "api-key", apiKey });
-  await writeState({ active: name });
-  await setApiKey(apiKey);
+  await writeProfileMeta(name, { type: "api-key", apiKey });
+  await writeJson(profileSettings(name), {
+    env: { ANTHROPIC_API_KEY: apiKey },
+  });
 }
 
-export async function switchProfile(name: string): Promise<ProfileData> {
+/**
+ * Save the currently-active profile's ephemeral state (oauthAccount) back
+ * into its snapshot, so any changes Claude Code made while it was active
+ * are preserved across switches.
+ */
+async function snapshotActive(): Promise<void> {
+  const active = await readActive();
+  if (!active) return;
+  if (!(await profileExists(active))) return;
+  const account = await readOAuthAccount();
+  if (account) {
+    await writeJson(profileAccountSnapshot(active), account);
+  }
+}
+
+export async function activate(name: string): Promise<void> {
   if (!(await profileExists(name))) {
     throw new Error(`Profile "${name}" does not exist`);
   }
 
-  const state = await readState();
-  const targetData = await readProfileData(name);
+  // Preserve current profile's identity before switching away
+  await snapshotActive();
 
-  // Save current credentials and account back to the old profile (if it was oauth)
-  if (state.active && state.active !== name) {
-    const oldData = await readProfileData(state.active);
-    if (oldData.type === "oauth") {
-      const currentCreds = await readCredentials(CREDENTIALS_FILE);
-      if (currentCreds) {
-        await ensureDir(profileDir(state.active));
-        await copyCredentials(CREDENTIALS_FILE, profileCredentials(state.active));
-      }
-      const currentAccount = await readOAuthAccount();
-      if (currentAccount) {
-        await writeJson(profileAccountFile(state.active), currentAccount);
-      }
-    }
-  }
+  // Swing the junction
+  await pointClaudeAt(profileDir(name));
 
-  // Activate the target profile
-  if (targetData.type === "api-key" && targetData.apiKey) {
-    await setApiKey(targetData.apiKey);
-  } else {
-    await clearApiKey();
-    await copyCredentials(profileCredentials(name), CREDENTIALS_FILE);
+  // Restore this profile's oauthAccount into ~/.claude.json
+  const saved = await readJson<Record<string, unknown> | null>(
+    profileAccountSnapshot(name),
+    null,
+  );
+  await writeOAuthAccount(saved);
 
-    // Restore oauthAccount to ~/.claude.json
-    const savedAccount = await readJson<OAuthAccount | null>(
-      profileAccountFile(name),
-      null,
-    );
-    if (savedAccount) {
-      await writeOAuthAccount(savedAccount);
-    }
-  }
-
-  await writeState({ active: name });
-
-  return targetData;
+  await writeActive(name);
 }
 
 export async function removeProfile(name: string): Promise<void> {
   if (!(await profileExists(name))) {
     throw new Error(`Profile "${name}" does not exist`);
   }
-
-  const state = await readState();
-  const data = await readProfileData(name);
-
-  // Clean up if this was the active api-key profile
-  if (state.active === name && data.type === "api-key") {
-    await clearApiKey();
+  const active = await readActive();
+  if (active === name) {
+    // Unhook ~/.claude first so we don't try to delete through the junction
+    const kind = await classifyPath(CLAUDE_DIR);
+    if (kind === "link") await unlinkLink(CLAUDE_DIR);
+    await writeOAuthAccount(null);
+    await writeActive(null);
   }
-
-  await rm(profileDir(name), { recursive: true });
-
-  if (state.active === name) {
-    await writeState({ active: null });
-  }
+  await rm(profileDir(name), { recursive: true, force: true });
 }

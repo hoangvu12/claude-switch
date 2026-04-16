@@ -1,12 +1,13 @@
 import { homedir } from "os";
 import { join } from "path";
 
-export const CLAUDE_DIR = join(homedir(), ".claude");
-export const CLAUDE_JSON = join(homedir(), ".claude.json");
-export const CREDENTIALS_FILE = join(CLAUDE_DIR, ".credentials.json");
-export const SETTINGS_FILE = join(CLAUDE_DIR, "settings.json");
-export const PROFILES_DIR = join(homedir(), ".claude-profiles");
-export const STATE_FILE = join(PROFILES_DIR, "state.json");
+export const HOME = homedir();
+export const CLAUDE_DIR = join(HOME, ".claude");
+export const CLAUDE_JSON = join(HOME, ".claude.json");
+
+export const ROOT_DIR = join(HOME, ".claude-switch");
+export const PROFILES_DIR = join(ROOT_DIR, "profiles");
+export const ACTIVE_FILE = join(ROOT_DIR, "active");
 
 export function profileDir(name: string): string {
   return join(PROFILES_DIR, name);
@@ -16,10 +17,14 @@ export function profileCredentials(name: string): string {
   return join(profileDir(name), ".credentials.json");
 }
 
-export function profileDataFile(name: string): string {
-  return join(profileDir(name), "profile.json");
+export function profileSettings(name: string): string {
+  return join(profileDir(name), "settings.json");
 }
 
-export function profileAccountFile(name: string): string {
-  return join(profileDir(name), "account.json");
+export function profileMeta(name: string): string {
+  return join(profileDir(name), ".cs-meta.json");
+}
+
+export function profileAccountSnapshot(name: string): string {
+  return join(profileDir(name), ".cs-account.json");
 }

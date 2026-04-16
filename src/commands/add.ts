@@ -1,10 +1,47 @@
 import { spawn } from "child_process";
 import chalk from "chalk";
-import { select, confirm, password } from "@inquirer/prompts";
-import { profileExists, addOAuthProfile, addApiKeyProfile } from "../lib/profiles";
-import { readCredentials } from "../lib/credentials";
-import { CREDENTIALS_FILE } from "../lib/paths";
-import { success, error, info, blank, formatLabel, maskKey } from "../lib/ui";
+import { select, password, confirm, input } from "@inquirer/prompts";
+import {
+  profileExists,
+  createOAuthProfile,
+  createApiKeyProfile,
+  activate,
+  inspectClaudeDir,
+  importExistingClaude,
+} from "../lib/profiles";
+import { profileCredentials, profileAccountSnapshot } from "../lib/paths";
+import { fileExists, writeJson } from "../lib/fs";
+import { readOAuthAccount } from "../lib/claudeJson";
+import { success, error, info, blank, maskKey, hint } from "../lib/ui";
+
+async function maybeMigrateExistingClaude(): Promise<void> {
+  if ((await inspectClaudeDir()) !== "real") return;
+
+  blank();
+  info("Detected an existing ~/.claude directory.");
+  const doImport = await confirm({
+    message: "Import it as a profile so we can safely manage it?",
+    default: true,
+  });
+  if (!doImport) {
+    error("Cannot proceed — ~/.claude must be empty, a junction, or imported first.");
+    blank();
+    process.exit(1);
+  }
+
+  let name = "default";
+  while (await profileExists(name)) {
+    name = await input({
+      message: `Profile name for existing ~/.claude (taken: "${name}"):`,
+      default: `${name}-1`,
+    });
+  }
+  await importExistingClaude(name);
+  success(`Imported existing ~/.claude as profile ${chalk.bold(name)}`);
+  // Activate it so the junction gets created and everything stays working.
+  await activate(name);
+  blank();
+}
 
 export async function add(name: string): Promise<void> {
   blank();
@@ -20,6 +57,8 @@ export async function add(name: string): Promise<void> {
     blank();
     process.exit(1);
   }
+
+  await maybeMigrateExistingClaude();
 
   const type = await select({
     message: "What type of profile?",
@@ -40,58 +79,41 @@ async function addApiKey(name: string): Promise<void> {
   const key = await password({
     message: "Paste your API key",
     mask: "*",
-    validate: (v) => {
-      if (!v.trim()) return "API key cannot be empty";
-      return true;
-    },
+    validate: (v) => (v.trim() ? true : "API key cannot be empty"),
   });
 
-  await addApiKeyProfile(name, key.trim());
+  await createApiKeyProfile(name, key.trim());
+  await activate(name);
   blank();
-  success(`Profile ${chalk.bold(name)} created  ${chalk.dim(maskKey(key.trim()))}`);
+  success(`Profile ${chalk.bold(name)} created and active  ${chalk.dim(maskKey(key.trim()))}`);
   blank();
 }
 
 async function addOAuth(name: string): Promise<void> {
-  const creds = await readCredentials(CREDENTIALS_FILE);
+  await createOAuthProfile(name);
+  // Point ~/.claude at the new (empty) profile so `claude /login` writes into it
+  await activate(name);
 
-  if (creds) {
-    const sub = creds.claudeAiOauth?.subscriptionType ?? null;
-    info(`Found active session ${sub ? `(${formatLabel(sub, "oauth")})` : ""}`);
-
-    const importCurrent = await confirm({
-      message: "Save this session as the new profile?",
-      default: true,
-    });
-
-    if (importCurrent) {
-      await addOAuthProfile(name, CREDENTIALS_FILE);
-      blank();
-      success(`Profile ${chalk.bold(name)} created from current session`);
-      blank();
-      return;
-    }
-  }
-
-  info("Opening Claude login...");
+  info("Launching Claude login...");
   blank();
 
-  const proc = spawn("claude", ["login"], {
+  const proc = spawn("claude", ["/login"], {
     stdio: "inherit",
     shell: true,
   });
-  await new Promise<void>((resolve) => proc.on("close", resolve));
+  await new Promise<void>((resolve) => proc.on("close", () => resolve()));
 
-  const newCreds = await readCredentials(CREDENTIALS_FILE);
-  if (!newCreds) {
+  const hasCreds = await fileExists(profileCredentials(name));
+  if (!hasCreds) {
     blank();
-    error("Login failed or was cancelled.");
-    blank();
-    process.exit(1);
+    info("Couldn't find credentials in the new profile. Login may have been cancelled.");
   }
 
-  await addOAuthProfile(name, CREDENTIALS_FILE);
+  // Snapshot the oauthAccount that Claude Code just wrote to ~/.claude.json
+  const account = await readOAuthAccount();
+  if (account) await writeJson(profileAccountSnapshot(name), account);
+
   blank();
-  success(`Profile ${chalk.bold(name)} created`);
+  success(`Profile ${chalk.bold(name)} created and active`);
   blank();
 }
