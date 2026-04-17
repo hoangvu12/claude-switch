@@ -1,10 +1,14 @@
-import { mkdir, readdir, rm, readFile, writeFile } from "fs/promises";
+import { mkdir, readdir, rename, rm, readFile, writeFile } from "fs/promises";
+import { join } from "path";
 import {
   PROFILES_DIR,
   ACTIVE_FILE,
   ROOT_DIR,
   CLAUDE_DIR,
+  SHARED_SUBDIRS,
+  sharedSubdir,
   profileDir,
+  profileSubdir,
   profileCredentials,
   profileSettings,
   profileMeta,
@@ -25,6 +29,50 @@ import type { ProfileData, ProfileInfo, CredentialsFile } from "../types";
 
 async function ensureDir(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
+}
+
+// -- shared user-level content (history, skills, plugins, ...) --
+
+/**
+ * Recursively move every child of `src` into `dest`.
+ * On file conflicts, keep the existing (shared) version. On directory
+ * conflicts, recurse in. Removes `src` afterward.
+ */
+async function mergeDirInto(src: string, dest: string): Promise<void> {
+  await ensureDir(dest);
+  const entries = await readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const sp = join(src, entry.name);
+    const dp = join(dest, entry.name);
+    const destKind = await classifyPath(dp);
+    if (destKind === "none") {
+      await rename(sp, dp);
+    } else if (entry.isDirectory() && destKind === "dir") {
+      await mergeDirInto(sp, dp);
+    }
+  }
+  await rm(src, { recursive: true, force: true });
+}
+
+/**
+ * Ensure each SHARED_SUBDIRS entry inside the profile is a junction into
+ * the central shared dir. On first switch, a profile's existing contents
+ * (e.g. old `projects/`, `skills/`) are merged into the shared store.
+ */
+async function ensureSharedLinks(profile: string): Promise<void> {
+  for (const sub of SHARED_SUBDIRS) {
+    const shared = sharedSubdir(sub);
+    await ensureDir(shared);
+    const link = profileSubdir(profile, sub);
+    const kind = await classifyPath(link);
+    if (kind === "link") continue;
+    if (kind === "dir") {
+      await mergeDirInto(link, shared);
+    } else if (kind === "file") {
+      throw new Error(`Unexpected file at ${link}; delete it and retry.`);
+    }
+    await linkDir(shared, link);
+  }
 }
 
 // -- active profile state --
@@ -145,6 +193,7 @@ export async function importExistingClaude(name: string): Promise<void> {
   await ensureDir(PROFILES_DIR);
   await renameDir(CLAUDE_DIR, profileDir(name));
   await writeProfileMeta(name, { type: "oauth" });
+  await ensureSharedLinks(name);
 
   // Snapshot the current oauthAccount from ~/.claude.json
   const account = await readOAuthAccount();
@@ -156,6 +205,7 @@ export async function importExistingClaude(name: string): Promise<void> {
 export async function createOAuthProfile(name: string): Promise<void> {
   await ensureDir(profileDir(name));
   await writeProfileMeta(name, { type: "oauth" });
+  await ensureSharedLinks(name);
 }
 
 export async function createApiKeyProfile(
@@ -167,6 +217,7 @@ export async function createApiKeyProfile(
   await writeJson(profileSettings(name), {
     env: { ANTHROPIC_API_KEY: apiKey },
   });
+  await ensureSharedLinks(name);
 }
 
 /**
@@ -192,6 +243,14 @@ export async function activate(name: string): Promise<void> {
   // Preserve current profile's identity before switching away
   await snapshotActive();
 
+  // Migrate both profiles' local user-level dirs (history, skills, etc.)
+  // into the shared store on first switch, so they survive across profiles.
+  const active = await readActive();
+  if (active && active !== name && (await profileExists(active))) {
+    await ensureSharedLinks(active);
+  }
+  await ensureSharedLinks(name);
+
   // Swing the junction
   await pointClaudeAt(profileDir(name));
 
@@ -216,6 +275,13 @@ export async function removeProfile(name: string): Promise<void> {
     if (kind === "link") await unlinkLink(CLAUDE_DIR);
     await writeOAuthAccount(null);
     await writeActive(null);
+  }
+  // Detach junctions into shared content so rm doesn't touch the shared store.
+  for (const sub of SHARED_SUBDIRS) {
+    const link = profileSubdir(name, sub);
+    if ((await classifyPath(link)) === "link") {
+      await unlinkLink(link);
+    }
   }
   await rm(profileDir(name), { recursive: true, force: true });
 }
