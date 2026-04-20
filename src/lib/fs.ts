@@ -1,7 +1,4 @@
-import { readFile, writeFile, access, lstat, symlink, unlink, rename } from "fs/promises";
-import { platform } from "os";
-
-const IS_WIN = platform() === "win32";
+import { readFile, writeFile, access, lstat, rename, mkdir, cp } from "fs/promises";
 
 export async function fileExists(path: string): Promise<boolean> {
   try {
@@ -25,9 +22,9 @@ export async function writeJson(path: string, data: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(data, null, 2));
 }
 
-export type LinkKind = "none" | "link" | "dir" | "file";
+export type PathKind = "none" | "link" | "dir" | "file";
 
-export async function classifyPath(path: string): Promise<LinkKind> {
+export async function classifyPath(path: string): Promise<PathKind> {
   try {
     const stat = await lstat(path);
     if (stat.isSymbolicLink()) return "link";
@@ -39,24 +36,14 @@ export async function classifyPath(path: string): Promise<LinkKind> {
   }
 }
 
-/** Create a symlink (junction on Windows) from `linkPath` → `target`. */
-export async function linkDir(target: string, linkPath: string): Promise<void> {
-  await symlink(target, linkPath, IS_WIN ? "junction" : "dir");
-}
-
-/** Remove a symlink/junction. Does NOT recurse into the target. */
-export async function unlinkLink(linkPath: string): Promise<void> {
-  try {
-    await unlink(linkPath);
-  } catch {
-    // On some Windows setups junctions need rmdir
-    try {
-      const { rm } = await import("fs/promises");
-      await rm(linkPath, { recursive: false, force: true });
-    } catch {}
-  }
+export async function ensureDir(path: string): Promise<void> {
+  await mkdir(path, { recursive: true });
 }
 
 export async function renameDir(from: string, to: string): Promise<void> {
   await rename(from, to);
+}
+
+export async function copyDir(from: string, to: string): Promise<void> {
+  await cp(from, to, { recursive: true, force: false, errorOnExist: false });
 }

@@ -2,13 +2,14 @@
 
 import chalk from "chalk";
 import { select } from "@inquirer/prompts";
-import { listProfiles, readActive } from "./lib/profiles";
-import { formatLabel, formatType, blank, hint } from "./lib/ui";
+import { listProfiles, readActive, inspectClaudeDir } from "./lib/profiles";
+import { formatLabel, formatType, blank, hint, info } from "./lib/ui";
 import { add } from "./commands/add";
 import { use } from "./commands/use";
 import { list } from "./commands/list";
 import { remove } from "./commands/remove";
 import { current } from "./commands/current";
+import { migrate } from "./commands/migrate";
 
 const HELP = `
   ${chalk.bold("claude-switch")} — Switch between Claude Code accounts
@@ -20,6 +21,7 @@ const HELP = `
     claude-switch list             List all profiles
     claude-switch remove <name>    Remove a profile
     claude-switch current          Show active profile
+    claude-switch migrate          Migrate from v3 (or re-run setup)
     claude-switch help             Show this help
 
   ${chalk.dim("Shortcuts:")}
@@ -27,6 +29,22 @@ const HELP = `
     claude-switch ls               Same as 'list'
     claude-switch rm <name>        Same as 'remove <name>'
 `;
+
+/**
+ * If we detect v3-era state (~/.claude is a junction we own), print a hint.
+ * Don't block — users running one-off commands shouldn't be forced through migration.
+ */
+async function maybeNagAboutMigration(): Promise<void> {
+  if ((await inspectClaudeDir()) === "link") {
+    blank();
+    info(
+      chalk.yellow("v3 state detected") +
+        chalk.dim(` — run `) +
+        chalk.cyan("claude-switch migrate") +
+        chalk.dim(" to move to v4 (env-var based)."),
+    );
+  }
+}
 
 async function interactivePicker(): Promise<void> {
   const profiles = await listProfiles();
@@ -86,6 +104,7 @@ async function main(): Promise<void> {
       case "list":
       case "ls":
         await list();
+        await maybeNagAboutMigration();
         break;
 
       case "remove":
@@ -99,6 +118,11 @@ async function main(): Promise<void> {
 
       case "current":
         await current();
+        await maybeNagAboutMigration();
+        break;
+
+      case "migrate":
+        await migrate();
         break;
 
       case "help":
@@ -109,6 +133,7 @@ async function main(): Promise<void> {
 
       case undefined:
         await interactivePicker();
+        await maybeNagAboutMigration();
         break;
 
       default: {

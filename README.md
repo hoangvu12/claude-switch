@@ -2,19 +2,12 @@
 
 Tired of logging in and out of Claude Code? Same.
 
-This tool lets you save multiple Claude accounts as profiles and switch between them instantly. Works with subscriptions (Pro, Max, Team) and API keys.
+Save multiple Claude accounts as profiles and switch between them instantly. Works with subscriptions (Pro, Max, Team, Enterprise) and API keys.
 
 ## Install
 
 ```bash
 npm install -g @hoangvu12/claude-switch
-```
-
-Or use it directly with `npx`:
-
-```bash
-npx @hoangvu12/claude-switch add personal
-npx @hoangvu12/claude-switch use work
 ```
 
 ## Getting Started
@@ -26,15 +19,14 @@ claude-switch add personal
 # Add another account (runs `claude /login` in an isolated profile dir)
 claude-switch add work
 
-# Switch instantly — takes effect in every terminal
-claude-switch use personal
+# Switch — takes effect in every terminal immediately
 claude-switch use work
 
 # No args = interactive picker
 claude-switch
 ```
 
-No shell setup, no sourcing, no env vars. Just run the command.
+On your first `add`, claude-switch installs a small `claude` shim at `~/.claude-switch/bin/` and prints the one-line PATH edit you need to do. After that, `claude` in any terminal routes to the currently active profile automatically.
 
 ## Adding API Key Profiles
 
@@ -54,30 +46,45 @@ claude-switch add my-api
 | `claude-switch list` | Show all your profiles |
 | `claude-switch current` | Print the active profile |
 | `claude-switch remove <name>` | Delete a profile |
+| `claude-switch migrate` | Migrate from v3 (or re-run setup) |
 
 ## How It Works
 
-Each profile is a fully isolated Claude config directory at `~/.claude-switch/profiles/<name>/`. Switching profiles swings `~/.claude` as a **symlink** (directory junction on Windows, no admin needed) to point at the active profile. Claude Code, your IDE, and any wrappers like discord-rc just read `~/.claude` as usual — they don't even know it's a link.
+Each profile lives at `~/.claude-switch/profiles/<name>/` — a self-contained Claude config dir. Switching writes the active profile's path to `~/.claude-switch/active-path`.
 
-Because we never copy credentials in or out, OAuth refresh tokens can't go stale. Claude Code refreshes tokens in place inside whatever profile dir is active; they stay valid across switches forever.
+The installed shim at `~/.claude-switch/bin/claude` reads that pointer on every invocation, sets `CLAUDE_CONFIG_DIR`, and execs the real `claude` binary. So any terminal that has the shim on PATH picks up switches instantly — no shell sourcing, no daemon restarts.
 
-The small sync that still happens: `oauthAccount` (account identity, not tokens) lives in `~/.claude.json` which is a sibling of `~/.claude/`. The tool keeps a per-profile snapshot of this field and restores it on switch so the UI shows the right account.
-
-**API key profiles** store the key in `settings.json` inside the profile dir, so it's automatically active when the junction points at that profile.
+**Why the env-var approach:** it's the officially supported knob, and it avoids the filesystem manipulation class of bugs (stale symlinks, merge conflicts losing skills, etc.).
 
 ## Works With
 
-- Windows (via directory junctions, no admin required)
-- Linux (via symlinks)
-- Any IDE that reads `~/.claude` — VS Code, Cursor, Windsurf, plain terminal
-- Wrappers like discord-rc — they inherit `~/.claude` through the junction
-- Subscriptions (Pro, Max, Team, Enterprise) and API keys
+- Windows (PowerShell, CMD, Git Bash)
+- Linux (bash, zsh, fish — any POSIX shell)
+- Any tool that reads `CLAUDE_CONFIG_DIR` — `claude` itself, IDE extensions, editors
+- [discord-rc](https://github.com/hoangvu12/discord-rc) v2+ — reads `~/.claude-switch/active-path` directly, so it live-follows the active profile with no restart needed
 
-macOS is not supported in v3 — Claude Code stores OAuth tokens in Keychain on Mac (not in `~/.claude`), which the junction approach can't isolate.
+**macOS is supported for API-key profiles only.** Claude Code stores OAuth tokens in the Keychain on Mac, not inside `CLAUDE_CONFIG_DIR` — so OAuth profiles can't be isolated there. API-key profiles work fine everywhere.
 
-## Upgrading from v2
+## Upgrading from v3
 
-v3 is a rewrite. Old profiles in `~/.claude-profiles/` are ignored — you'll re-add your accounts. This is deliberate: v2's copy-based approach could leave saved refresh tokens stale (and invalid). The new junction-based approach avoids that class of bug entirely. Safe to delete `~/.claude-profiles/` after setup.
+v3 used directory junctions on `~/.claude`. v4 drops that entirely in favor of `CLAUDE_CONFIG_DIR` + a lightweight shim. Run:
+
+```bash
+claude-switch migrate
+```
+
+This unlinks the old junction, copies any shared content (skills, plugins, projects) back into each profile so they stay self-contained, and installs the shim. Your profile data is preserved. The v3 `~/.claude-switch/shared/` store becomes unused and can be deleted after you verify.
+
+## Troubleshooting
+
+**`claude` still launches without profile routing.**
+Your shell can't find the shim. Check `which claude` (Linux/Mac) or `where claude` (Windows) — it should point at `~/.claude-switch/bin/claude`. If not, re-run the PATH export from `claude-switch migrate` output.
+
+**Wrong profile is active.**
+Run `claude-switch current` to verify. Then `claude-switch use <name>` to switch.
+
+**Credentials disappeared after switch.**
+You shouldn't see this on v4 — each profile's credentials live in its own dir and never get copied. If you do, open an issue.
 
 ## License
 

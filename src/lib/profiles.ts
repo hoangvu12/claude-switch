@@ -1,14 +1,11 @@
-import { mkdir, readdir, rename, rm, readFile, writeFile } from "fs/promises";
-import { join } from "path";
+import { readdir, readFile, writeFile, rm } from "fs/promises";
 import {
   PROFILES_DIR,
-  ACTIVE_FILE,
   ROOT_DIR,
+  ACTIVE_FILE,
+  ACTIVE_PATH_FILE,
   CLAUDE_DIR,
-  SHARED_SUBDIRS,
-  sharedSubdir,
   profileDir,
-  profileSubdir,
   profileCredentials,
   profileSettings,
   profileMeta,
@@ -18,62 +15,13 @@ import {
   fileExists,
   readJson,
   writeJson,
-  classifyPath,
-  linkDir,
-  unlinkLink,
+  ensureDir,
   renameDir,
+  classifyPath,
 } from "./fs";
 import { readOAuthAccount, writeOAuthAccount } from "./claudeJson";
 import { maskKey } from "./ui";
 import type { ProfileData, ProfileInfo, CredentialsFile } from "../types";
-
-async function ensureDir(path: string): Promise<void> {
-  await mkdir(path, { recursive: true });
-}
-
-// -- shared user-level content (history, skills, plugins, ...) --
-
-/**
- * Recursively move every child of `src` into `dest`.
- * On file conflicts, keep the existing (shared) version. On directory
- * conflicts, recurse in. Removes `src` afterward.
- */
-async function mergeDirInto(src: string, dest: string): Promise<void> {
-  await ensureDir(dest);
-  const entries = await readdir(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const sp = join(src, entry.name);
-    const dp = join(dest, entry.name);
-    const destKind = await classifyPath(dp);
-    if (destKind === "none") {
-      await rename(sp, dp);
-    } else if (entry.isDirectory() && destKind === "dir") {
-      await mergeDirInto(sp, dp);
-    }
-  }
-  await rm(src, { recursive: true, force: true });
-}
-
-/**
- * Ensure each SHARED_SUBDIRS entry inside the profile is a junction into
- * the central shared dir. On first switch, a profile's existing contents
- * (e.g. old `projects/`, `skills/`) are merged into the shared store.
- */
-async function ensureSharedLinks(profile: string): Promise<void> {
-  for (const sub of SHARED_SUBDIRS) {
-    const shared = sharedSubdir(sub);
-    await ensureDir(shared);
-    const link = profileSubdir(profile, sub);
-    const kind = await classifyPath(link);
-    if (kind === "link") continue;
-    if (kind === "dir") {
-      await mergeDirInto(link, shared);
-    } else if (kind === "file") {
-      throw new Error(`Unexpected file at ${link}; delete it and retry.`);
-    }
-    await linkDir(shared, link);
-  }
-}
 
 // -- active profile state --
 
@@ -90,14 +38,15 @@ async function writeActive(name: string | null): Promise<void> {
   await ensureDir(ROOT_DIR);
   if (name) {
     await writeFile(ACTIVE_FILE, name);
+    await writeFile(ACTIVE_PATH_FILE, profileDir(name));
   } else {
-    try {
-      await rm(ACTIVE_FILE);
-    } catch {}
+    for (const f of [ACTIVE_FILE, ACTIVE_PATH_FILE]) {
+      try { await rm(f); } catch {}
+    }
   }
 }
 
-// -- profile metadata (type, api key) --
+// -- profile metadata --
 
 async function readProfileMeta(name: string): Promise<ProfileData> {
   return readJson<ProfileData>(profileMeta(name), { type: "oauth" });
@@ -151,35 +100,15 @@ export async function getProfileData(name: string): Promise<ProfileData> {
   return readProfileMeta(name);
 }
 
-// -- junction management --
+// -- ~/.claude inspection / import --
 
-/**
- * Result of inspecting ~/.claude.
- * - "missing": doesn't exist
- * - "junction": already our junction (or any symlink)
- * - "real": a real directory with Claude's files — needs migration before linking
- */
-export type ClaudeDirState = "missing" | "junction" | "real";
+export type ClaudeDirState = "missing" | "link" | "real";
 
 export async function inspectClaudeDir(): Promise<ClaudeDirState> {
   const kind = await classifyPath(CLAUDE_DIR);
   if (kind === "none") return "missing";
-  if (kind === "link") return "junction";
+  if (kind === "link") return "link";
   return "real";
-}
-
-async function pointClaudeAt(target: string): Promise<void> {
-  const kind = await classifyPath(CLAUDE_DIR);
-  if (kind === "link") {
-    await unlinkLink(CLAUDE_DIR);
-  } else if (kind === "dir") {
-    throw new Error(
-      `~/.claude is a real directory. Import or move it first.`,
-    );
-  } else if (kind === "file") {
-    throw new Error(`~/.claude exists as a file — unexpected. Please inspect manually.`);
-  }
-  await linkDir(target, CLAUDE_DIR);
 }
 
 /** Move an existing real ~/.claude into a new profile under the given name. */
@@ -193,9 +122,7 @@ export async function importExistingClaude(name: string): Promise<void> {
   await ensureDir(PROFILES_DIR);
   await renameDir(CLAUDE_DIR, profileDir(name));
   await writeProfileMeta(name, { type: "oauth" });
-  await ensureSharedLinks(name);
 
-  // Snapshot the current oauthAccount from ~/.claude.json
   const account = await readOAuthAccount();
   if (account) await writeJson(profileAccountSnapshot(name), account);
 }
@@ -205,7 +132,6 @@ export async function importExistingClaude(name: string): Promise<void> {
 export async function createOAuthProfile(name: string): Promise<void> {
   await ensureDir(profileDir(name));
   await writeProfileMeta(name, { type: "oauth" });
-  await ensureSharedLinks(name);
 }
 
 export async function createApiKeyProfile(
@@ -217,18 +143,17 @@ export async function createApiKeyProfile(
   await writeJson(profileSettings(name), {
     env: { ANTHROPIC_API_KEY: apiKey },
   });
-  await ensureSharedLinks(name);
 }
 
 /**
- * Save the currently-active profile's ephemeral state (oauthAccount) back
- * into its snapshot, so any changes Claude Code made while it was active
- * are preserved across switches.
+ * Save the currently-active profile's live oauthAccount back into its
+ * snapshot so the account-identity UI stays correct across switches.
+ * Credentials themselves don't need copying — each profile dir is
+ * CLAUDE_CONFIG_DIR while active, so refreshed tokens land directly inside.
  */
 async function snapshotActive(): Promise<void> {
   const active = await readActive();
-  if (!active) return;
-  if (!(await profileExists(active))) return;
+  if (!active || !(await profileExists(active))) return;
   const account = await readOAuthAccount();
   if (account) {
     await writeJson(profileAccountSnapshot(active), account);
@@ -240,21 +165,8 @@ export async function activate(name: string): Promise<void> {
     throw new Error(`Profile "${name}" does not exist`);
   }
 
-  // Preserve current profile's identity before switching away
   await snapshotActive();
 
-  // Migrate both profiles' local user-level dirs (history, skills, etc.)
-  // into the shared store on first switch, so they survive across profiles.
-  const active = await readActive();
-  if (active && active !== name && (await profileExists(active))) {
-    await ensureSharedLinks(active);
-  }
-  await ensureSharedLinks(name);
-
-  // Swing the junction
-  await pointClaudeAt(profileDir(name));
-
-  // Restore this profile's oauthAccount into ~/.claude.json
   const saved = await readJson<Record<string, unknown> | null>(
     profileAccountSnapshot(name),
     null,
@@ -270,18 +182,8 @@ export async function removeProfile(name: string): Promise<void> {
   }
   const active = await readActive();
   if (active === name) {
-    // Unhook ~/.claude first so we don't try to delete through the junction
-    const kind = await classifyPath(CLAUDE_DIR);
-    if (kind === "link") await unlinkLink(CLAUDE_DIR);
     await writeOAuthAccount(null);
     await writeActive(null);
-  }
-  // Detach junctions into shared content so rm doesn't touch the shared store.
-  for (const sub of SHARED_SUBDIRS) {
-    const link = profileSubdir(name, sub);
-    if ((await classifyPath(link)) === "link") {
-      await unlinkLink(link);
-    }
   }
   await rm(profileDir(name), { recursive: true, force: true });
 }

@@ -9,37 +9,73 @@ import {
   inspectClaudeDir,
   importExistingClaude,
 } from "../lib/profiles";
-import { profileCredentials, profileAccountSnapshot } from "../lib/paths";
+import {
+  profileCredentials,
+  profileAccountSnapshot,
+  profileDir,
+  BIN_DIR,
+} from "../lib/paths";
 import { fileExists, writeJson } from "../lib/fs";
 import { readOAuthAccount } from "../lib/claudeJson";
+import {
+  installShim,
+  shimInstalled,
+  binDirOnPath,
+  resolveRealClaude,
+  pathInstructions,
+} from "../lib/shim";
 import { success, error, info, blank, maskKey, hint } from "../lib/ui";
 
-async function maybeMigrateExistingClaude(): Promise<void> {
+async function ensureSetup(): Promise<void> {
+  if (!(await shimInstalled())) {
+    await installShim();
+  }
+  const real = await resolveRealClaude();
+  if (!real) {
+    error(
+      "Could not find the `claude` binary on your PATH. " +
+        "Install Claude Code first (https://docs.anthropic.com/en/docs/claude-code).",
+    );
+    blank();
+    process.exit(1);
+  }
+  if (!binDirOnPath()) {
+    blank();
+    info(chalk.bold("One-time setup — add claude-switch's shim dir to PATH:"));
+    console.log();
+    for (const line of pathInstructions().split("\n")) {
+      console.log(`  ${line}`);
+    }
+    blank();
+    hint(
+      `Without this, typing ${chalk.cyan("claude")} still runs the original binary ` +
+        `without profile routing. claude-switch itself works either way.`,
+    );
+    blank();
+  }
+}
+
+async function maybeImportExistingClaude(): Promise<void> {
   if ((await inspectClaudeDir()) !== "real") return;
 
   blank();
   info("Detected an existing ~/.claude directory.");
   const doImport = await confirm({
-    message: "Import it as a profile so we can safely manage it?",
+    message: "Import it as a profile? (recommended — otherwise it stays untouched)",
     default: true,
   });
-  if (!doImport) {
-    error("Cannot proceed — ~/.claude must be empty, a junction, or imported first.");
-    blank();
-    process.exit(1);
-  }
+  if (!doImport) return;
 
   let name = "default";
   while (await profileExists(name)) {
     name = await input({
-      message: `Profile name for existing ~/.claude (taken: "${name}"):`,
+      message: `Profile name (taken: "${name}"):`,
       default: `${name}-1`,
     });
   }
   await importExistingClaude(name);
-  success(`Imported existing ~/.claude as profile ${chalk.bold(name)}`);
-  // Activate it so the junction gets created and everything stays working.
   await activate(name);
+  success(`Imported existing ~/.claude as profile ${chalk.bold(name)} and made it active`);
   blank();
 }
 
@@ -58,7 +94,8 @@ export async function add(name: string): Promise<void> {
     process.exit(1);
   }
 
-  await maybeMigrateExistingClaude();
+  await ensureSetup();
+  await maybeImportExistingClaude();
 
   const type = await select({
     message: "What type of profile?",
@@ -91,15 +128,22 @@ async function addApiKey(name: string): Promise<void> {
 
 async function addOAuth(name: string): Promise<void> {
   await createOAuthProfile(name);
-  // Point ~/.claude at the new (empty) profile so `claude /login` writes into it
   await activate(name);
+
+  const real = await resolveRealClaude();
+  if (!real) {
+    error("Couldn't locate the real `claude` binary to run /login.");
+    blank();
+    process.exit(1);
+  }
 
   info("Launching Claude login...");
   blank();
 
-  const proc = spawn("claude", ["/login"], {
+  const proc = spawn(real, ["/login"], {
     stdio: "inherit",
-    shell: true,
+    shell: false,
+    env: { ...process.env, CLAUDE_CONFIG_DIR: profileDir(name) },
   });
   await new Promise<void>((resolve) => proc.on("close", () => resolve()));
 
@@ -109,11 +153,13 @@ async function addOAuth(name: string): Promise<void> {
     info("Couldn't find credentials in the new profile. Login may have been cancelled.");
   }
 
-  // Snapshot the oauthAccount that Claude Code just wrote to ~/.claude.json
   const account = await readOAuthAccount();
   if (account) await writeJson(profileAccountSnapshot(name), account);
 
   blank();
   success(`Profile ${chalk.bold(name)} created and active`);
+  if (!binDirOnPath()) {
+    hint(`Remember to add ${BIN_DIR} to PATH for automatic profile routing.`);
+  }
   blank();
 }
